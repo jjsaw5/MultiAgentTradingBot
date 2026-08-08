@@ -200,7 +200,9 @@ class FMPRestProvider(MarketDataProvider):
             )
         return [e for e in (self._earnings_row(r, "/stable/earnings-calendar") for r in rows) if e]
 
-    def get_next_earnings(self, symbol: str, horizon_days: int = 120) -> EarningsEvent | None:
+    def get_next_earnings(
+        self, symbol: str, horizon_days: int = 120, as_of: date | None = None
+    ) -> EarningsEvent | None:
         """Next scheduled earnings for one ticker, from the per-symbol endpoint.
 
         Overrides the base implementation, which filters the market-wide
@@ -209,7 +211,7 @@ class FMPRestProvider(MarketDataProvider):
         the earnings blackout rule, the exact failure this override prevents.
         """
         rows = self._get("/stable/earnings", {"symbol": symbol.upper(), "limit": 8})
-        today = datetime.now(UTC).date()
+        today = as_of or datetime.now(UTC).date()
         horizon = today + timedelta(days=horizon_days)
         events = [
             e
@@ -279,6 +281,102 @@ class FMPRestProvider(MarketDataProvider):
                 scope=CatalystScope.COMPANY,
                 relevance_confidence=0.5,
                 evidence_quality=EvidenceQuality.REPORTED,
+            )
+            for r in rows or []
+        ]
+
+    # --- typed catalyst feeds --------------------------------------------
+    def get_analyst_actions(self, symbol: str, limit: int = 10) -> list[NewsItem]:
+        """Upgrades and downgrades, already classified by the vendor.
+
+        ``action`` is one of upgrade / downgrade / hold / initialise. Only the
+        first two carry a direction; the rest are recorded as ratings news
+        without an implied direction, because a reiterated Hold is not a
+        bearish event.
+        """
+        rows = self._get("/stable/grades-news", {"symbol": symbol.upper(), "limit": limit})
+        out: list[NewsItem] = []
+        for r in rows or []:
+            action = str(r.get("action", "")).lower()
+            catalyst = {
+                "upgrade": CatalystType.ANALYST_UPGRADE,
+                "downgrade": CatalystType.ANALYST_DOWNGRADE,
+            }.get(action, CatalystType.OTHER)
+            grade = f"{r.get('previousGrade')} -> {r.get('newGrade')}"
+            out.append(
+                NewsItem(
+                    headline=r.get("newsTitle") or f"{symbol.upper()} {action}: {grade}",
+                    summary=f"{r.get('gradingCompany')}: {grade} ({action}).",
+                    url=r.get("newsURL"),
+                    publisher=r.get("gradingCompany") or r.get("newsPublisher"),
+                    published_at=_parse_dt(r.get("publishedDate")),
+                    tickers=[symbol.upper()],
+                    catalyst_type=catalyst,
+                    scope=CatalystScope.COMPANY,
+                    relevance_confidence=0.7 if catalyst is not CatalystType.OTHER else 0.4,
+                    # The rating change itself is a matter of record.
+                    evidence_quality=EvidenceQuality.CONFIRMED_FACT,
+                )
+            )
+        return out
+
+    def get_price_target_changes(self, symbol: str, limit: int = 10) -> list[NewsItem]:
+        """Analyst price-target updates, with the implied move attached.
+
+        Note the sell-side skew: in a sample of the latest feed, 45 of 50
+        targets sat above the prevailing price. A target above spot is
+        therefore not evidence of anything on its own, and no direction is
+        asserted from it. The numbers are attached so an agent can weigh them.
+        """
+        rows = self._get("/stable/price-target-news", {"symbol": symbol.upper(), "limit": limit})
+        out: list[NewsItem] = []
+        for r in rows or []:
+            target = _f(r.get("adjPriceTarget")) or _f(r.get("priceTarget"))
+            spot = _f(r.get("priceWhenPosted"))
+            implied = (
+                f" Implied move {((target / spot) - 1) * 100:+.1f}% from {spot:.2f}."
+                if target and spot
+                else ""
+            )
+            out.append(
+                NewsItem(
+                    headline=r.get("newsTitle") or f"{symbol.upper()} price target {target}",
+                    summary=(
+                        f"{r.get('analystCompany') or r.get('newsPublisher') or 'Analyst'}"
+                        f" target {target}.{implied}"
+                    ),
+                    url=r.get("newsURL"),
+                    publisher=r.get("analystCompany") or r.get("newsPublisher"),
+                    published_at=_parse_dt(r.get("publishedDate")),
+                    tickers=[symbol.upper()],
+                    catalyst_type=CatalystType.PRICE_TARGET_CHANGE,
+                    scope=CatalystScope.COMPANY,
+                    relevance_confidence=0.5,
+                    evidence_quality=EvidenceQuality.REPORTED,
+                )
+            )
+        return out
+
+    def get_press_releases(self, symbol: str, limit: int = 10) -> list[NewsItem]:
+        """Company-issued releases -- a primary source, unlike third-party news."""
+        rows = self._get(
+            "/stable/news/press-releases", {"symbols": symbol.upper(), "limit": limit}
+        )
+        return [
+            NewsItem(
+                headline=r.get("title", ""),
+                summary=r.get("text"),
+                url=r.get("url"),
+                publisher=r.get("publisher") or r.get("site"),
+                published_at=_parse_dt(r.get("publishedDate")),
+                tickers=[symbol.upper()],
+                # The company saying it is a fact about what the company said.
+                # What it means for the stock is still the agent's call, so the
+                # type stays unclassified.
+                catalyst_type=CatalystType.OTHER,
+                scope=CatalystScope.COMPANY,
+                relevance_confidence=0.6,
+                evidence_quality=EvidenceQuality.CONFIRMED_FACT,
             )
             for r in rows or []
         ]

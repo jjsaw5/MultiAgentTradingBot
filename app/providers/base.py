@@ -151,8 +151,32 @@ class MarketDataProvider(BaseProvider):
     @abc.abstractmethod
     def get_sector_performance(self) -> dict[str, float]: ...
 
-    def get_next_earnings(self, symbol: str, horizon_days: int = 120) -> EarningsEvent | None:
-        today = utcnow().date()
+    # --- typed catalyst feeds --------------------------------------------
+    # Optional. A provider that publishes pre-classified events (analyst
+    # actions, price-target changes, company press releases) should override
+    # these, because a typed catalyst does not need an LLM to recognise it.
+    # Providers that only carry untyped headlines return nothing rather than
+    # guessing a classification.
+
+    def get_analyst_actions(self, symbol: str, limit: int = 10) -> list[NewsItem]:
+        return []
+
+    def get_price_target_changes(self, symbol: str, limit: int = 10) -> list[NewsItem]:
+        return []
+
+    def get_press_releases(self, symbol: str, limit: int = 10) -> list[NewsItem]:
+        return []
+
+    def get_next_earnings(
+        self, symbol: str, horizon_days: int = 120, as_of: date | None = None
+    ) -> EarningsEvent | None:
+        """Next scheduled earnings on or after ``as_of``.
+
+        The reference date is explicit because the pipeline is driven by a
+        trading day, not by the wall clock -- a scan replayed for a past date
+        must see the calendar as it stood then.
+        """
+        today = as_of or utcnow().date()
         events = self.get_earnings_calendar(today, _add_days(today, horizon_days))
         upcoming = sorted(
             (e for e in events if e.ticker == symbol.upper() and e.event_date >= today),

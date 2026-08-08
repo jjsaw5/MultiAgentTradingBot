@@ -36,6 +36,7 @@ from app.models.market_brief import (
     IndexContext,
     MacroObservation,
     MarketBrief,
+    NewsItem,
     RiskEvent,
     SectorObservation,
     VolatilityContext,
@@ -181,11 +182,16 @@ class MarketIntelligenceAgent:
         except Exception as exc:  # noqa: BLE001
             pack["unavailable"].append(f"economic calendar: {exc}")
 
-        try:
-            earnings = md.get_earnings_calendar(trading_day, trading_day + timedelta(days=120))
-            pack["earnings"] = {e.ticker: e for e in earnings}
-        except Exception as exc:  # noqa: BLE001
-            pack["unavailable"].append(f"earnings calendar: {exc}")
+        # Per ticker, not from the market-wide calendar: that feed is row-capped
+        # by at least one provider and drops tickers silently, which would leave
+        # a scheduled earnings catalyst invisible to the whole pipeline.
+        for ticker in self.universe:
+            try:
+                event = md.get_next_earnings(ticker, as_of=trading_day)
+                if event is not None:
+                    pack["earnings"][ticker] = event
+            except Exception as exc:  # noqa: BLE001
+                pack["unavailable"].append(f"{ticker} earnings: {exc}")
 
         try:
             pack["sector_performance"] = md.get_sector_performance()
@@ -193,10 +199,27 @@ class MarketIntelligenceAgent:
             pack["unavailable"].append(f"sector performance: {exc}")
 
         for ticker in self.universe:
+            # General news arrives unclassified -- deliberately, since typing a
+            # headline is interpretation. The typed feeds below carry their own
+            # classification from the vendor, so a rating change is recognised
+            # as one without any model having to read the headline.
+            items: list[NewsItem] = []
             try:
-                pack["company_news"][ticker] = md.get_company_news(ticker, limit=10)
+                items.extend(md.get_company_news(ticker, limit=10))
             except Exception as exc:  # noqa: BLE001
                 pack["unavailable"].append(f"{ticker} news: {exc}")
+
+            for label, fetch in (
+                ("analyst actions", md.get_analyst_actions),
+                ("price targets", md.get_price_target_changes),
+                ("press releases", md.get_press_releases),
+            ):
+                try:
+                    items.extend(fetch(ticker, limit=5))
+                except Exception as exc:  # noqa: BLE001
+                    pack["unavailable"].append(f"{ticker} {label}: {exc}")
+
+            pack["company_news"][ticker] = items
 
         if self.providers.news is not None:
             rec.providers_queried.append("news")

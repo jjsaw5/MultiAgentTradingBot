@@ -9,7 +9,7 @@ depends only on the interface, so swapping a vendor is a change inside
 | Market data | `MarketDataProvider` | Financial Modeling Prep | `mock`, `rest` | **Verified against a live key** |
 | Options market | `OptionsMarketProvider` | Robinhood | `mock`, `mcp` | **Mapping verified against live MCP responses**; needs a runtime with tool access to run |
 | Options flow | `OptionsFlowProvider` | Unusual Whales | `mock`, `rest` | **Verified against a live token** |
-| News | `NewsProvider` | — | `mock` | Interface only; no vendor wired |
+| News | `NewsProvider` | FMP + Unusual Whales | `mock`, `rest` | **Verified**; no separate newswire subscription needed |
 
 Select a backend per provider in `.env`:
 
@@ -17,7 +17,7 @@ Select a backend per provider in `.env`:
 FMP_BACKEND=mock              # mock | rest
 UNUSUAL_WHALES_BACKEND=mock   # mock | rest
 ROBINHOOD_BACKEND=mock        # mock | mcp
-NEWS_BACKEND=mock             # mock
+NEWS_BACKEND=mock             # mock | rest  (rest = FMP + Unusual Whales combined)
 ```
 
 ---
@@ -43,6 +43,38 @@ responses rather than documentation.
 | Economic calendar | `get_economic_calendar` | `/stable/economic-calendar` | Macro events, risk events |
 | Company news | `get_company_news` | `/stable/news/stock` | Catalyst identification |
 | Sector performance | `get_sector_performance` | `/stable/sector-performance-snapshot` | Sector bias |
+| Analyst upgrades/downgrades | `get_analyst_actions` | `/stable/grades-news` | **Typed** catalysts |
+| Price-target changes | `get_price_target_changes` | `/stable/price-target-news` | **Typed** catalysts |
+| Company press releases | `get_press_releases` | `/stable/news/press-releases` | Primary-source catalysts |
+
+### Typed catalyst feeds change the pipeline materially
+
+General news arrives unclassified, and deliberately so — typing a headline is
+interpretation, which belongs to the agent. But FMP also publishes feeds that
+are *already classified by the vendor*, and those need no interpretation at all:
+
+* `/stable/grades-news` carries an `action` of `upgrade` / `downgrade` / `hold`
+  / `initialise`. The first two map straight onto `ANALYST_UPGRADE` and
+  `ANALYST_DOWNGRADE`. A reiterated Hold is recorded as ratings news with **no
+  direction** — a maintained rating is not a bearish event.
+* `/stable/price-target-news` carries the target and the price when posted, so
+  the implied move is attached. **No direction is asserted from it**: in a
+  sample of the latest feed, 45 of 50 targets sat above the prevailing price,
+  so a target above spot is evidence of sell-side convention, not of upside.
+* `/stable/news/press-releases` is company-issued, so it is treated as a
+  primary source (`CONFIRMED_FACT`). What a release *means* is still
+  interpretation, so its catalyst type stays open.
+
+Measured effect on a live five-ticker scan, heuristic path, no LLM:
+
+| | Tradable catalysts |
+| --- | --- |
+| Untyped news only | 1 of 51 (2%) |
+| With typed feeds | 36 of 130 (28%) |
+
+This does not remove the need for the LLM path — most catalysts are still
+`OTHER`, and judging *materiality* remains interpretation. It does mean the
+heuristic path is no longer inert against real data.
 
 **The market-wide earnings calendar is silently truncated at 4,000 rows.** A
 ticker that reports inside the requested window can simply be absent — NVDA was,
@@ -228,9 +260,28 @@ ticker association, catalyst classification, and relevance confidence.
 requires a publisher and a URL, and `evidence_quality` cannot honestly exceed
 `UNVERIFIED` for an unattributed post. Scoring gives `UNVERIFIED` zero credit.
 
-**Status.** Only the mock backend ships. For production, point `NewsProvider` at
-a reputable newswire; prefer primary sources (filings, agency releases, exchange
-notices) over aggregators.
+**Status: implemented and verified.** No separate newswire subscription is
+required — FMP and Unusual Whales both carry news, and `NEWS_BACKEND=rest`
+combines whichever have credentials via `CompositeNewsProvider`, de-duplicating
+by headline and sorting newest first. A source that fails is skipped rather
+than failing the fetch: news is corroborating context, and losing one feed
+should not blind the run.
+
+| Source | Endpoint | Contributes |
+| --- | --- | --- |
+| FMP | `/stable/news/general-latest` | Market-wide headlines with publisher, URL, timestamp |
+| FMP | `/stable/news/press-releases` | Company primary sources |
+| Unusual Whales | `/api/news/headlines` | Headlines with an `is_major` importance flag |
+
+**One field is deliberately ignored.** Unusual Whales returns a `sentiment`
+value, but it read `"neutral"` on all 100 rows of a live sample. A field that
+never varies carries no information, and passing it through as direction would
+manufacture a signal out of a constant. A test asserts that changing it changes
+nothing downstream.
+
+Unusual Whales headlines carry no article URL, and only ~37% carry a ticker
+association, so the feed is better suited to market context than to
+ticker-specific catalysts. FMP covers the latter.
 
 ---
 

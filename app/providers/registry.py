@@ -127,11 +127,43 @@ def build_providers(
         unavailable[DataProvider.UNUSUAL_WHALES.value] = str(exc)
 
     # --- news --------------------------------------------------------------
+    # FMP and Unusual Whales both carry news, so no separate newswire
+    # subscription is required. Whichever have credentials are combined.
     news: NewsProvider | None
     if s.news_backend is ProviderBackend.MOCK:
         from app.providers.news.mock import MockNewsProvider
 
         news = MockNewsProvider(market)
+    elif s.news_backend is ProviderBackend.REST:
+        from app.providers.news.rest import (
+            CompositeNewsProvider,
+            FMPNewsProvider,
+            UnusualWhalesNewsProvider,
+        )
+
+        sources: list[NewsProvider] = []
+        notes: list[str] = []
+        for label, factory in (
+            ("fmp", lambda: FMPNewsProvider(s.secret("fmp_api_key"), s.fmp_base_url)),
+            (
+                "unusual_whales",
+                lambda: UnusualWhalesNewsProvider(
+                    s.secret("unusual_whales_api_key"), s.unusual_whales_base_url
+                ),
+            ),
+        ):
+            try:
+                sources.append(factory())
+            except ProviderUnavailable as exc:
+                notes.append(f"{label}: {exc}")
+
+        if sources:
+            news = CompositeNewsProvider(sources)
+        else:
+            news = None
+            unavailable[DataProvider.NEWS.value] = (
+                "No news source could be configured. " + " ".join(notes)
+            )
     else:
         news = None
         unavailable[DataProvider.NEWS.value] = (

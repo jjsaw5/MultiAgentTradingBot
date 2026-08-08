@@ -262,7 +262,9 @@ class TradeValidatorAgent:
         # --- earnings ------------------------------------------------------
         earnings: EarningsEvent | None = None
         try:
-            earnings = self.providers.market_data.get_next_earnings(ticker)
+            earnings = self.providers.market_data.get_next_earnings(
+                ticker, as_of=trading_day
+            )
         except Exception as exc:  # noqa: BLE001
             missing.append(
                 MissingData(field="earnings_date", provider=DataProvider.FMP, reason=str(exc))
