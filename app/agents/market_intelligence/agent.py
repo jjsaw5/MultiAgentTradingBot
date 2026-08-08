@@ -18,6 +18,7 @@ from typing import Any
 
 from app.agents.base import AgentRunRecord, trace
 from app.agents.llm import LLMClient, LLMUnavailable
+from app.agents.market_intelligence.assessment import MarketAssessment
 from app.agents.market_intelligence.prompt import SYSTEM_PROMPT, build_user_prompt
 from app.models.common import SourceReference, utcnow
 from app.models.enums import (
@@ -122,13 +123,12 @@ class MarketIntelligenceAgent:
 
             if self.use_llm:
                 try:
-                    brief = self.llm.structured(
+                    assessment = self.llm.structured(
                         system=SYSTEM_PROMPT,
                         user=build_user_prompt(run_id, trading_day, pack),
-                        schema=MarketBrief,
+                        schema=MarketAssessment,
                     )
-                    brief.run_id = run_id
-                    brief.as_of_trading_day = trading_day
+                    brief = self._merge(run_id, trading_day, pack, assessment, rec)
                 except (LLMUnavailable, Exception) as exc:  # noqa: BLE001
                     rec.warnings.append(
                         f"LLM path failed ({type(exc).__name__}: {exc}); fell back to heuristics."
@@ -244,6 +244,121 @@ class MarketIntelligenceAgent:
             return None
         atr_pct = spy["technicals"].atr_pct
         return round(atr_pct * (252**0.5), 2) if atr_pct else None
+
+    # ----------------------------------------------------------- llm merge
+    def _merge(
+        self,
+        run_id: str,
+        trading_day: date,
+        pack: dict[str, Any],
+        assessment: MarketAssessment,
+        rec: AgentRunRecord,
+    ) -> MarketBrief:
+        """Combine the model's judgement with the measured pack.
+
+        The model supplies regimes, biases and catalyst classifications. Every
+        price, level, timestamp, news item and calendar entry comes from the
+        pack, so the brief cannot contain a measurement the providers did not
+        return.
+        """
+        news_items = list(pack["news"])
+        for items in pack["company_news"].values():
+            news_items.extend(items)
+
+        # Join key for recovering a catalyst's citation. A catalyst whose
+        # headline does not appear here was not in the evidence.
+        by_headline = {_normalise(n.headline): n for n in news_items}
+
+        indexes: dict[str, IndexContext] = {}
+        for read in (assessment.spy, assessment.qqq, assessment.iwm):
+            if read is None:
+                continue
+            measured = self._index_context(read.symbol, pack)
+            if measured is None:
+                # No measured data for this index: keep the read, but do not
+                # invent levels to sit underneath it.
+                indexes[read.symbol] = IndexContext(
+                    symbol=read.symbol, bias=read.bias, notes=read.notes
+                )
+                continue
+            indexes[read.symbol] = measured.model_copy(
+                update={"bias": read.bias, "notes": read.notes or measured.notes}
+            )
+
+        catalysts: list[CompanyCatalyst] = []
+        uncited = 0
+        for c in assessment.company_catalysts:
+            source = by_headline.get(_normalise(c.headline))
+            if source is None:
+                # The model produced a catalyst with no matching evidence. It is
+                # kept for the audit trail but cannot be treated as supported,
+                # and unverified evidence earns no points downstream.
+                uncited += 1
+            catalysts.append(
+                CompanyCatalyst(
+                    ticker=c.ticker,
+                    catalyst_type=c.catalyst_type,
+                    headline=c.headline,
+                    description=c.description,
+                    scope=CatalystScope.COMPANY,
+                    source=source.publisher if source else None,
+                    source_url=source.url if source else None,
+                    published_at=source.published_at if source else None,
+                    expected_direction=c.expected_direction,
+                    importance_score=c.importance_score,
+                    expected_time_horizon=c.expected_time_horizon,
+                    scheduled_event_date=c.scheduled_event_date,
+                    is_scheduled=c.scheduled_event_date is not None,
+                    evidence_quality=(
+                        c.evidence_quality if source else EvidenceQuality.UNVERIFIED
+                    ),
+                    already_priced_in=c.already_priced_in,
+                )
+            )
+        if uncited:
+            rec.warnings.append(
+                f"{uncited} catalyst(s) cited a headline not present in the evidence pack; "
+                "downgraded to UNVERIFIED."
+            )
+
+        spy = indexes.get("SPY") or IndexContext(symbol="SPY", bias=Bias.NEUTRAL)
+        qqq = indexes.get("QQQ") or IndexContext(symbol="QQQ", bias=Bias.NEUTRAL)
+        _, vol_ctx = self._volatility(pack)
+
+        return MarketBrief(
+            run_id=run_id,
+            as_of_trading_day=trading_day,
+            market_regime=assessment.market_regime,
+            volatility_regime=assessment.volatility_regime,
+            spy=spy,
+            qqq=qqq,
+            iwm=indexes.get("IWM"),
+            volatility=vol_ctx.model_copy(
+                update={"regime": assessment.volatility_regime}
+            ),
+            breadth_note=assessment.breadth_note or self._breadth_note(indexes),
+            regime_rationale=assessment.regime_rationale,
+            macro_observations=assessment.macro_observations,
+            # Calendars, news and sources are measured data, not judgement.
+            upcoming_economic_events=list(pack["economic_events"]),
+            sector_observations=assessment.sector_observations,
+            company_catalysts=catalysts,
+            news_items=news_items,
+            risk_events=assessment.risk_events,
+            sources=[
+                SourceReference(
+                    title=n.headline,
+                    url=n.url,
+                    publisher=n.publisher,
+                    published_at=n.published_at,
+                    tickers=n.tickers,
+                )
+                for n in news_items
+                if n.url
+            ],
+            unavailable_data=list(pack["unavailable"]) + list(assessment.unavailable_data),
+            overall_relevance_confidence=assessment.overall_relevance_confidence,
+        )
 
     # ------------------------------------------------------ heuristic path
     def _heuristic_brief(
@@ -520,8 +635,48 @@ class MarketIntelligenceAgent:
         return out
 
 
+def _normalise(headline: str) -> str:
+    """Whitespace- and case-insensitive key for matching a headline."""
+    return " ".join((headline or "").lower().split())
+
+
+#: Bounds on what is sent to the model. The full pack routinely runs to
+#: hundreds of items, which is slow, expensive, and mostly noise -- a 30-day
+#: US economic calendar alone returned 213 rows. Whatever is trimmed is stated
+#: in the prompt so the model knows it is seeing a subset.
+MAX_MARKET_NEWS = 25
+MAX_COMPANY_NEWS = 12
+MAX_ECONOMIC_EVENTS = 25
+
+
 def summarize_pack(pack: dict[str, Any]) -> str:
-    """Compact JSON view of the evidence pack, for prompts and audit records."""
+    """Compact JSON view of the evidence pack, for prompts and audit records.
+
+    Deliberately lossy: see the MAX_* bounds above. Counts are reported
+    alongside each truncated list so the omission is visible rather than
+    silent.
+    """
+    # Economic events are ranked by importance, then date -- a LOW-impact rig
+    # count should not crowd out an FOMC decision.
+    order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+    events = sorted(
+        pack["economic_events"],
+        key=lambda e: (order.get(e.importance.value, 9), e.scheduled_date or date.max),
+    )
+
+    def news_json(items: list[Any]) -> list[dict[str, Any]]:
+        return [
+            {
+                "headline": n.headline,
+                "publisher": n.publisher,
+                "published_at": str(n.published_at),
+                "catalyst_type": n.catalyst_type.value,
+                "evidence_quality": n.evidence_quality.value,
+                "summary": (n.summary or "")[:280] or None,
+            }
+            for n in items
+        ]
+
     return json.dumps(
         {
             "indexes": {
@@ -540,6 +695,8 @@ def summarize_pack(pack: dict[str, Any]) -> str:
                 for sym, e in pack["indexes"].items()
             },
             "sector_performance": pack["sector_performance"],
+            "economic_events_shown": f"{min(len(events), MAX_ECONOMIC_EVENTS)} of {len(events)}, "
+            "highest importance first",
             "economic_events": [
                 {
                     "name": e.name,
@@ -549,37 +706,32 @@ def summarize_pack(pack: dict[str, Any]) -> str:
                     "consensus": e.consensus,
                     "previous": e.previous,
                 }
-                for e in pack["economic_events"]
+                for e in events[:MAX_ECONOMIC_EVENTS]
             ],
             "earnings": {t: str(e.event_date) for t, e in pack["earnings"].items()},
-            "market_news": [
-                {
-                    "headline": n.headline,
-                    "publisher": n.publisher,
-                    "url": n.url,
-                    "published_at": str(n.published_at),
-                    "tickers": n.tickers,
-                }
-                for n in pack["news"]
-            ],
+            "market_news_shown": f"{min(len(pack['news']), MAX_MARKET_NEWS)} of {len(pack['news'])}",
+            "market_news": news_json(pack["news"][:MAX_MARKET_NEWS]),
             "company_news": {
-                t: [
-                    {
-                        "headline": n.headline,
-                        "publisher": n.publisher,
-                        "url": n.url,
-                        "published_at": str(n.published_at),
-                        "evidence_quality": n.evidence_quality.value,
-                    }
-                    for n in items
-                ]
+                t: news_json(items[:MAX_COMPANY_NEWS])
+                for t, items in pack["company_news"].items()
+            },
+            "company_news_shown": {
+                t: f"{min(len(items), MAX_COMPANY_NEWS)} of {len(items)}"
                 for t, items in pack["company_news"].items()
             },
             "unavailable": pack["unavailable"],
         },
-        indent=2,
+        indent=1,
         default=str,
     )
 
 
-__all__ = ["INDEXES", "PRIMARY_CATALYST_TYPES", "MarketIntelligenceAgent", "summarize_pack"]
+__all__ = [
+    "INDEXES",
+    "MAX_COMPANY_NEWS",
+    "MAX_ECONOMIC_EVENTS",
+    "MAX_MARKET_NEWS",
+    "PRIMARY_CATALYST_TYPES",
+    "MarketIntelligenceAgent",
+    "summarize_pack",
+]

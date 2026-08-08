@@ -371,29 +371,43 @@ Listed because they are real, not because they are theoretical.
 6. **Single-name scoring only.** Nothing looks across the ranked set for
    correlated exposure — five semiconductor calls score as five independent
    trades. This is what the Risk Reviewer is designed to catch.
-7. **The heuristic path cannot classify real news — confirmed against live
-   data.** A scan over five real tickers with live FMP news produced 51
-   catalysts, of which **50 were `OTHER`**. The provider deliberately does not
-   classify catalyst type (that is the agent's job, and a provider asserting an
-   interpretation would corrupt the evidence chain), and the heuristic
-   fallback cannot classify either. Only the earnings-calendar catalyst — which
-   arrives pre-typed — survived to become a candidate.
+7. **The heuristic path is for testing, not production — measured.** On a live
+   five-ticker scan the heuristic path classified 36 of 130 catalysts as
+   tradable (28%), all of them from vendor-typed feeds. The LLM path on the
+   same data produced 21 catalysts of which 13 were tradable (62%) — and
+   crucially, types the heuristic path cannot reach at all: `MAJOR_CONTRACT`,
+   `TECHNICAL_BREAKOUT`, `LITIGATION`, `SEC_FILING`, `EXECUTIVE_CHANGE`. It
+   also *selected* rather than enumerating, which is the actual job.
 
-   The consequence is concrete: **with real news, `LLM_BACKEND=anthropic` is
-   required, not optional.** The heuristic path exists so the pipeline runs and
-   is testable without credentials; it is not a degraded-but-usable production
-   mode. Mock runs look healthy only because the mock provider pre-classifies.
+   `LLM_BACKEND=anthropic` is the production configuration. The heuristic path
+   exists so the pipeline runs and is testable without credentials.
+
+8. **A full LLM scan is slow: roughly 400 seconds for two tickers**, dominated
+   by Agent 1 (~250s). Agent 3 runs once per candidate, so a ten-candidate day
+   is materially longer. This is acceptable for a research pipeline run once or
+   twice a day, and it is why the screening funnel matters: Agent 1 should
+   receive a curated ~50 names, not a raw universe. Parallelising Agent 3
+   across candidates is the obvious next optimisation.
+
+9. **LLM output length is variable, so failures are intermittent.** The same
+   prompt fit inside the token budget on one run and overflowed on the next.
+   Three mitigations are in place — the model is asked for judgement only and
+   never to echo the evidence back, the evidence pack sent to it is bounded,
+   and a truncated response retries once with double the budget — but a run
+   that still overflows falls back to heuristics rather than failing, and says
+   so in `agent_runs.warnings`. Check that field before trusting a scan.
 
 ---
 
 ## Roadmap
 
-**Milestone 2 — real data.** FMP is done and verified against a live key.
-Remaining: Unusual Whales against a live key, Robinhood MCP wired through a
-runtime with tool access, the screening funnel, and automatic shadow-tracking
-of every recommendation (including rejects) so an outcome dataset accumulates
-without waiting on manual entry. The LLM path becomes mandatory here — see
-weakness 7.
+**Milestone 2 — real data.** Done and verified against live credentials: FMP,
+Unusual Whales, news, and the Anthropic reasoning path (all three agents).
+Remaining: Robinhood MCP wired through a runtime with tool access — the last
+mock, and the only thing standing between the pipeline and a real
+recommendation. Then the screening funnel, and automatic shadow-tracking of
+every recommendation including rejects, so an outcome dataset accumulates
+without waiting on manual entry.
 
 **Milestone 3 — the Risk Reviewer.** Wire `.claude/agents/risk-reviewer.md`
 into the pipeline with demotion-only authority and cross-candidate correlation

@@ -200,3 +200,81 @@ def test_every_allowed_strategy_is_a_net_debit():
     """A defined-risk debit position can never lose more than it cost."""
     for strategy in StrategyType:
         assert strategy.value.startswith(("LONG_", "BULL_CALL", "BEAR_PUT"))
+
+
+# ------------------------------------------------------- llm response parsing
+def test_json_extraction_tolerates_real_model_output():
+    """Models append explanations, wrap in fences, and emit stray braces.
+
+    Slicing first-brace-to-last-brace looks equivalent but fails on trailing
+    content with "Extra data" -- a bug that only shows up intermittently,
+    because output shape varies run to run.
+    """
+    from app.agents.llm import _extract_json
+
+    assert _extract_json('{"a": 1}') == {"a": 1}
+    assert _extract_json('{"a": 1}\n\nI hope this helps!') == {"a": 1}
+    assert _extract_json('```json\n{"a": 1}\n```') == {"a": 1}
+    assert _extract_json('Here you go:\n{"a": 1}') == {"a": 1}
+    assert _extract_json('{"a": {"b": [1,2]}} trailing } junk }') == {"a": {"b": [1, 2]}}
+
+
+@pytest.mark.parametrize("bad", ["no json here", "[1, 2, 3]", ""])
+def test_json_extraction_rejects_non_objects(bad):
+    from app.agents.llm import _extract_json
+
+    with pytest.raises(ValueError):
+        _extract_json(bad)
+
+
+def test_truncation_is_reported_as_truncation():
+    """A cut-off response otherwise surfaces as an inscrutable decode error."""
+    from app.agents.llm import MAX_OUTPUT_TOKENS, AnthropicLLMClient, LLMTruncated
+    from app.models.trade_candidate import CandidateSet
+
+    class Resp:
+        stop_reason = "max_tokens"
+        content = [type("B", (), {"type": "text", "text": '{"run_id": "r"'})()]
+
+    client = AnthropicLLMClient.__new__(AnthropicLLMClient)
+    client._model = "test"
+    client._max_tokens = MAX_OUTPUT_TOKENS  # so the retry cannot grow the budget
+    client._client = type(
+        "C", (), {"messages": type("M", (), {"create": staticmethod(lambda **kw: Resp())})()}
+    )()
+
+    with pytest.raises(LLMTruncated, match="output limit"):
+        client.structured(system="s", user="u", schema=CandidateSet)
+
+
+def test_truncation_retries_once_with_a_larger_budget():
+    from app.agents.llm import AnthropicLLMClient
+
+    budgets: list[int] = []
+
+    class Good:
+        stop_reason = "end_turn"
+        content = [
+            type("B", (), {"type": "text", "text": '{"run_id": "r", "no_trade_rationale": "x"}'})()
+        ]
+
+    class Truncated:
+        stop_reason = "max_tokens"
+        content = [type("B", (), {"type": "text", "text": "{"})()]
+
+    def create(**kw):
+        budgets.append(kw["max_tokens"])
+        return Truncated() if len(budgets) == 1 else Good()
+
+    from app.models.trade_candidate import CandidateSet
+
+    client = AnthropicLLMClient.__new__(AnthropicLLMClient)
+    client._model = "test"
+    client._max_tokens = 1000
+    client._client = type(
+        "C", (), {"messages": type("M", (), {"create": staticmethod(create)})()}
+    )()
+
+    result = client.structured(system="s", user="u", schema=CandidateSet)
+    assert result.run_id == "r"
+    assert budgets == [1000, 2000], "the retry must ask for more room"

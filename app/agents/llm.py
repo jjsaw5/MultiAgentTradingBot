@@ -30,6 +30,10 @@ from app.config.settings import LLMBackend, Settings, get_settings
 
 T = TypeVar("T", bound=BaseModel)
 
+#: Ceiling for the single truncation retry. Well inside what the current models
+#: allow, and far past what any schema here legitimately needs.
+MAX_OUTPUT_TOKENS = 32000
+
 ANTI_HALLUCINATION_CLAUSE = """
 Hard rules that override every other instruction:
 - Never invent a price, volume, greek, implied volatility, date, or headline.
@@ -47,6 +51,14 @@ Hard rules that override every other instruction:
 
 class LLMUnavailable(RuntimeError):
     pass
+
+
+class LLMTruncated(RuntimeError):
+    """The model ran out of output budget mid-response.
+
+    Worth its own type: the symptom is a JSON decode error deep in parsing,
+    which reads like a malformed model response rather than a budget problem.
+    """
 
 
 class LLMClient(Protocol):
@@ -84,7 +96,16 @@ class AnthropicLLMClient:
             system=system,
             messages=[{"role": "user", "content": user}],
         )
-        return "".join(block.text for block in resp.content if block.type == "text")
+        text = "".join(block.text for block in resp.content if block.type == "text")
+        if resp.stop_reason == "max_tokens":
+            # Truncated JSON surfaces as an inscrutable decode error several
+            # frames away. Name the real cause here instead.
+            raise LLMTruncated(
+                f"The response hit the {max_tokens}-token output limit and was cut off "
+                f"({len(text)} characters returned). Either raise LLM_MAX_TOKENS or "
+                f"narrow the response schema."
+            )
+        return text
 
     def structured(
         self, *, system: str, user: str, schema: type[T], max_tokens: int | None = None
@@ -96,7 +117,18 @@ class AnthropicLLMClient:
             "no markdown fences.\n"
             f"{json.dumps(schema.model_json_schema())}"
         )
-        raw = self._call(full_system, user, budget)
+
+        try:
+            raw = self._call(full_system, user, budget)
+        except LLMTruncated:
+            # Output length varies run to run, so the same prompt can fit one
+            # day and overflow the next. Retry once with more room before
+            # giving up on the reasoning path entirely.
+            retry_budget = min(budget * 2, MAX_OUTPUT_TOKENS)
+            if retry_budget <= budget:
+                raise
+            raw = self._call(full_system, _be_briefer(user), retry_budget)
+
         try:
             return schema.model_validate(_extract_json(raw))
         except (ValidationError, ValueError) as first_error:
@@ -134,20 +166,45 @@ def build_llm(settings: Settings | None = None) -> LLMClient:
 
 
 def _extract_json(text: str) -> dict[str, Any]:
+    """Pull the first complete JSON object out of a model response.
+
+    Slicing from the first ``{`` to the last ``}`` looks equivalent but is not:
+    a model that appends a sentence of explanation, or emits a second object,
+    produces a span that fails to parse with "Extra data". ``raw_decode`` reads
+    exactly one value and ignores whatever follows.
+    """
     text = text.strip()
     fence = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
     if fence:
         text = fence.group(1).strip()
-    start, end = text.find("{"), text.rfind("}")
-    if start == -1 or end == -1:
+
+    start = text.find("{")
+    if start == -1:
         raise ValueError("no JSON object found in the model response")
-    return json.loads(text[start : end + 1])
+    try:
+        value, _ = json.JSONDecoder().raw_decode(text[start:])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"could not decode JSON from the model response: {exc}") from exc
+    if not isinstance(value, dict):
+        raise ValueError(f"expected a JSON object, got {type(value).__name__}")
+    return value
+
+
+def _be_briefer(user: str) -> str:
+    return (
+        f"{user}\n\nYour previous attempt was cut off by the output limit. "
+        "Return the same structure but be more selective: keep only the items "
+        "that genuinely matter, and keep every free-text field to one or two "
+        "sentences."
+    )
 
 
 __all__ = [
     "ANTI_HALLUCINATION_CLAUSE",
+    "MAX_OUTPUT_TOKENS",
     "AnthropicLLMClient",
     "LLMClient",
+    "LLMTruncated",
     "LLMUnavailable",
     "ScriptedLLMClient",
     "build_llm",

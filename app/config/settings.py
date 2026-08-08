@@ -43,8 +43,8 @@ class Settings(BaseSettings):
     llm_backend: LLMBackend = LLMBackend.SCRIPTED
     anthropic_api_key: SecretStr | None = None
     llm_model: str = "claude-opus-5"
-    llm_max_tokens: int = 8000
-    llm_timeout_seconds: int = 120
+    llm_max_tokens: int = 16000
+    llm_timeout_seconds: int = 300
 
     # --- Providers --------------------------------------------------------
     fmp_backend: ProviderBackend = ProviderBackend.MOCK

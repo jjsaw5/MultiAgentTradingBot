@@ -52,7 +52,7 @@ system working, not failing — see
 Verify the install:
 
 ```bash
-pytest -q          # 163 tests
+pytest -q          # 233 tests
 ruff check app tests
 ```
 
@@ -136,7 +136,18 @@ LLM_MODEL=claude-opus-5
 
 Without this the agents use their documented heuristic path. Every run records
 `reasoning_mode` in `agent_runs`, so an offline scan is never mistaken for a
-reasoned one.
+reasoned one — **check that field before trusting a scan**, because a run that
+overflows the output budget falls back rather than failing.
+
+Two settings matter for the LLM path:
+
+| Setting | Default | Why |
+| --- | --- | --- |
+| `LLM_MAX_TOKENS` | 16000 | Output length varies run to run. A truncated response retries once at double this, capped at 32k. |
+| `LLM_TIMEOUT_SECONDS` | 300 | Agent 1 alone can take ~250s on a real evidence pack. |
+
+Expect roughly **400 seconds for a two-ticker scan** with all agents on the LLM
+path. Agent 3 runs once per candidate, so budget accordingly.
 
 ### Financial Modeling Prep
 
