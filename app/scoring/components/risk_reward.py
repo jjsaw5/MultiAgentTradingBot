@@ -35,19 +35,41 @@ def score(ctx: ScoringContext) -> ScoreComponent:
             if rr.reward_to_risk >= band.min:
                 awarded, band_note = band.points, f">= {band.min}"
                 break
+        risk_basis = (
+            f"${rr.risk_to_invalidation:,.0f} at risk to the invalidation level "
+            f"{rr.invalidation_underlying_price:.2f}"
+            if rr.risk_to_invalidation is not None
+            and rr.invalidation_underlying_price is not None
+            else f"${rr.max_loss:,.0f} full debit at risk (no invalidation level supplied)"
+        )
         reasons.append(
             ScoreReason(
                 rule="reward_to_risk",
                 points=awarded,
                 measurement=f"R:R={rr.reward_to_risk:.2f} ({band_note})",
                 detail=(
-                    f"Modelled value ${rr.expected_value_at_target:,.0f} at target "
-                    f"{rr.target_underlying_price:.2f} against ${rr.max_loss:,.0f} at risk."
+                    f"Modelled profit ${rr.expected_value_at_target:,.0f} at target "
+                    f"{rr.target_underlying_price:.2f} against {risk_basis}."
                 )
                 if rr.expected_value_at_target is not None
                 else None,
             )
         )
+        if rr.return_on_premium_at_target is not None:
+            # Reported for transparency only. It answers "what do I make on the
+            # premium?", which is a different question from "what do I risk to
+            # make it?", and it awards no points of its own.
+            reasons.append(
+                ScoreReason(
+                    rule="return_on_premium_at_target",
+                    points=0.0,
+                    measurement=(
+                        f"{rr.return_on_premium_at_target:+.0%} on the "
+                        f"${rr.max_loss:,.0f} debit at target"
+                    ),
+                    detail="Context for the reward/risk figure; scores no points itself.",
+                )
+            )
 
     # --- absolute size -----------------------------------------------------
     budget = limits.max_premium_per_trade_usd

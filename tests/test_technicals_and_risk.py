@@ -226,3 +226,141 @@ def test_reward_is_unavailable_rather_than_guessed_without_iv():
     )
     assert rr.reward_to_risk is None
     assert any("unavailable" in n for n in rr.method_notes)
+
+
+# ------------------------------------- risk measured to the invalidation level
+def test_risk_is_measured_to_the_invalidation_level_not_to_zero():
+    """The denominator is the loss actually taken, not the whole debit."""
+    cand = make_candidate()
+    trade = make_trade(cand)
+    managed = compute_risk_reward(
+        trade,
+        expected_move_pct=13.5,
+        direction_sign=1,
+        holding_days=21,
+        invalidation_price=116.0,
+        reference_day=TODAY,
+    )
+    unmanaged = compute_risk_reward(
+        trade,
+        expected_move_pct=13.5,
+        direction_sign=1,
+        holding_days=21,
+        reference_day=TODAY,
+    )
+
+    assert managed.risk_to_invalidation is not None
+    assert managed.risk_to_invalidation < managed.max_loss
+    # Same trade, same target: the only difference is what "risk" means.
+    assert managed.reward_to_risk > unmanaged.reward_to_risk
+    assert managed.expected_value_at_target == unmanaged.expected_value_at_target
+
+
+def test_return_on_premium_is_reported_separately():
+    rr = compute_risk_reward(
+        make_trade(make_candidate()),
+        expected_move_pct=13.5,
+        direction_sign=1,
+        holding_days=21,
+        invalidation_price=116.0,
+        reference_day=TODAY,
+    )
+    # Two different questions, two different numbers.
+    assert rr.return_on_premium_at_target == pytest.approx(
+        rr.expected_value_at_target / rr.max_loss, abs=1e-3
+    )
+    assert rr.reward_to_risk == pytest.approx(
+        rr.expected_value_at_target / rr.risk_to_invalidation, abs=1e-3
+    )
+    assert rr.reward_to_risk != rr.return_on_premium_at_target
+
+
+def test_a_tighter_stop_produces_a_better_reward_to_risk():
+    trade = make_trade(make_candidate())
+    tight = compute_risk_reward(
+        trade, expected_move_pct=13.5, direction_sign=1, holding_days=21,
+        invalidation_price=118.0, reference_day=TODAY,
+    )
+    loose = compute_risk_reward(
+        trade, expected_move_pct=13.5, direction_sign=1, holding_days=21,
+        invalidation_price=108.0, reference_day=TODAY,
+    )
+    assert tight.risk_to_invalidation < loose.risk_to_invalidation
+    assert tight.reward_to_risk > loose.reward_to_risk
+
+
+def test_risk_falls_back_to_the_full_debit_and_says_so():
+    rr = compute_risk_reward(
+        make_trade(make_candidate()),
+        expected_move_pct=13.5,
+        direction_sign=1,
+        holding_days=21,
+        reference_day=TODAY,
+    )
+    assert rr.risk_to_invalidation is None
+    assert rr.reward_to_risk == pytest.approx(rr.return_on_premium_at_target)
+    assert any("full debit" in n for n in rr.method_notes)
+
+
+def test_modelled_loss_at_the_stop_never_exceeds_the_debit():
+    """A defined-risk position cannot lose more than it cost."""
+    trade = make_trade(make_candidate())
+    rr = compute_risk_reward(
+        trade, expected_move_pct=13.5, direction_sign=1, holding_days=21,
+        invalidation_price=40.0, reference_day=TODAY,  # catastrophic gap
+    )
+    assert rr.risk_to_invalidation <= rr.max_loss
+    assert rr.value_at_invalidation >= 0.0
+
+
+def test_a_stop_inside_daily_noise_is_widened_for_modelling():
+    """A stop within 1 ATR would be taken out by ordinary movement."""
+    from app.config.methodology import load_methodology
+
+    risk_model = load_methodology("config/methodology.yaml").risk_model
+    trade = make_trade(make_candidate())  # underlying 120
+    atr = 3.0  # 1 ATR = $3, so a stop at 119 is well inside the noise
+
+    noisy = compute_risk_reward(
+        trade, expected_move_pct=13.5, direction_sign=1, holding_days=21,
+        invalidation_price=119.0, atr=atr, risk_model=risk_model, reference_day=TODAY,
+    )
+    honest = compute_risk_reward(
+        trade, expected_move_pct=13.5, direction_sign=1, holding_days=21,
+        invalidation_price=119.0, atr=None, risk_model=risk_model, reference_day=TODAY,
+    )
+
+    # The widened stop implies a larger, more realistic loss.
+    assert noisy.risk_to_invalidation > honest.risk_to_invalidation
+    assert noisy.reward_to_risk < honest.reward_to_risk
+    assert any("inside 1 ATR" in n for n in noisy.method_notes)
+
+
+def test_a_stop_beyond_one_atr_is_left_alone():
+    from app.config.methodology import load_methodology
+
+    risk_model = load_methodology("config/methodology.yaml").risk_model
+    rr = compute_risk_reward(
+        make_trade(make_candidate()),
+        expected_move_pct=13.5, direction_sign=1, holding_days=21,
+        invalidation_price=112.0, atr=2.4, risk_model=risk_model, reference_day=TODAY,
+    )
+    assert rr.invalidation_underlying_price == 112.0
+    assert not any("inside" in n for n in rr.method_notes)
+
+
+def test_stop_widening_mirrors_for_a_bearish_trade():
+    from app.config.methodology import load_methodology
+
+    risk_model = load_methodology("config/methodology.yaml").risk_model
+    cand = make_candidate(direction=Direction.BEARISH, strategy=StrategyType.LONG_PUT)
+    trade = make_trade(
+        cand,
+        legs=[Leg(action="BUY", quantity=1, contract=make_contract(right=OptionRight.PUT, delta=-0.41))],
+    )
+    rr = compute_risk_reward(
+        trade, expected_move_pct=13.5, direction_sign=-1, holding_days=21,
+        invalidation_price=121.0, atr=3.0, risk_model=risk_model, reference_day=TODAY,
+    )
+    # A bearish stop sits above price, so widening moves it further up.
+    assert rr.invalidation_underlying_price > 121.0

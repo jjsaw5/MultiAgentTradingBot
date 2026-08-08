@@ -255,6 +255,7 @@ class Orchestrator:
                 self.methodology.contract_selection,
                 today=self.trading_day,
                 underlying_price=underlying,
+                max_premium_usd=self.methodology.hard_rejections.max_premium_per_trade_usd,
             )
             trade, alternatives, selection_notes = (
                 outcome.trade,
@@ -273,6 +274,9 @@ class Orchestrator:
                 expected_move_pct=candidate.expected_move.percent,
                 direction_sign=candidate.direction.sign,
                 holding_days=candidate.expected_holding_period.approx_days,
+                invalidation_price=candidate.invalidation_price,
+                atr=measured.get("technicals").atr14 if measured.get("technicals") else None,
+                risk_model=self.methodology.risk_model,
                 reference_day=self.trading_day,
             )
 

@@ -182,7 +182,7 @@ class OpportunityGeneratorAgent:
                 discarded.append(f"{ticker}: no measurable volatility to size an expected move")
                 continue
 
-            strategy = self._strategy(ticker, direction)
+            strategy = self._strategy(ticker, direction, tech, horizon)
 
             candidates.append(
                 TradeCandidate(
@@ -228,6 +228,7 @@ class OpportunityGeneratorAgent:
                         ),
                     ),
                     invalidation_thesis=self._invalidation(direction, tech),
+                    invalidation_price=self._invalidation_price(direction, tech),
                     known_risks=self._risks(ticker, brief, best),
                     earnings_date=next(
                         (
@@ -338,18 +339,63 @@ class OpportunityGeneratorAgent:
             return TimeHorizon.MONTHS_1_3
         return TimeHorizon.WEEKS_2_4
 
-    def _strategy(self, ticker: str, direction: Direction) -> StrategyType:
+    def _strategy(
+        self,
+        ticker: str,
+        direction: Direction,
+        tech: TechnicalSnapshot,
+        horizon: TimeHorizon,
+    ) -> StrategyType:
+        """Choose between a long option and a debit vertical.
+
+        Two independent reasons to prefer a spread:
+
+        * **Volatility.** An elevated IV rank means a naked long is paying up
+          for volatility that is likely to contract; the short leg hedges part
+          of that.
+        * **Affordability.** On a high-priced underlying a single at-the-money
+          option can cost several times the per-trade budget. Proposing one
+          anyway would just generate a candidate that the budget rule rejects,
+          so the structure is downgraded to a vertical instead.
+        """
         iv_rank = None
+        iv = None
         if self.providers.options_flow is not None:
             try:
-                iv_rank = self.providers.options_flow.get_flow_snapshot(ticker).iv_rank
+                snapshot = self.providers.options_flow.get_flow_snapshot(ticker)
+                iv_rank, iv = snapshot.iv_rank, snapshot.iv30
             except Exception:  # noqa: BLE001 - flow is optional
-                iv_rank = None
+                iv_rank = iv = None
 
         prefer_spread = iv_rank is not None and iv_rank >= IV_RANK_PREFER_SPREAD
+
+        if not prefer_spread:
+            cost = self._approx_long_option_cost(tech, iv, horizon)
+            budget = self.methodology.hard_rejections.max_premium_per_trade_usd
+            if cost is not None and cost > budget:
+                prefer_spread = True
+
         if direction is Direction.BULLISH:
             return StrategyType.BULL_CALL_SPREAD if prefer_spread else StrategyType.LONG_CALL
         return StrategyType.BEAR_PUT_SPREAD if prefer_spread else StrategyType.LONG_PUT
+
+    @staticmethod
+    def _approx_long_option_cost(
+        tech: TechnicalSnapshot, iv: float | None, horizon: TimeHorizon
+    ) -> float | None:
+        """Rough dollar cost of one at-the-money option.
+
+        Uses the standard ATM approximation ``0.4 * S * sigma * sqrt(T)``. This
+        is a sizing check only -- the real price comes from the chain, and this
+        estimate never reaches a report.
+        """
+        if iv is None and tech.atr_pct:
+            iv = tech.atr_pct / 100.0 * (252**0.5)  # realised vol as a stand-in
+        if iv is None or not tech.price:
+            return None
+        # The contract must outlive the holding period; see contract_selection.
+        days = horizon.approx_days + 21
+        return 0.4 * tech.price * iv * (days / 365.0) ** 0.5 * 100
 
     @staticmethod
     def _trend_description(tech: TechnicalSnapshot) -> str:
@@ -380,6 +426,20 @@ class OpportunityGeneratorAgent:
             f"a {direction.value.lower()} position. Thesis: the catalyst pulls price "
             f"{'higher' if direction is Direction.BULLISH else 'lower'} over the holding period."
         )
+
+    @staticmethod
+    def _invalidation_price(direction: Direction, tech: TechnicalSnapshot) -> float | None:
+        """The level the prose invalidation refers to, as a number.
+
+        Kept in lockstep with :meth:`_invalidation` -- the two must describe the
+        same level, or the risk model and the human are reading different trades.
+        """
+        level = (
+            (tech.support or tech.sma20)
+            if direction is Direction.BULLISH
+            else (tech.resistance or tech.sma20)
+        )
+        return round(level, 4) if level and level > 0 else None
 
     @staticmethod
     def _invalidation(direction: Direction, tech: TechnicalSnapshot) -> str:

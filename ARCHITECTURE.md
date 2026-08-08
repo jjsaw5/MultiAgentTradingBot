@@ -321,6 +321,22 @@ time value you actually sell back. *Trade-off:* the model assumes flat IV, which
 is wrong around events; `iv_contraction_sensitivity` is reported separately so
 the assumption is visible rather than buried.
 
+**Risk measured to the invalidation level, not to zero.** The denominator of
+reward/risk is the loss taken at the stop, not the full debit, because that is
+the loss a managed trade actually incurs. Dividing by the whole premium turned
+a "1.0 reward/risk" floor into a demand for +100% return and rejected almost
+every long-premium trade. *Trade-off:* it depends on the candidate supplying a
+machine-readable `invalidation_price`, and a too-tight stop would game the
+ratio — so stops inside 1 ATR are widened for modelling and the adjustment is
+reported.
+
+**Vertical widths are searched, not assumed.** Spread width is configured in
+dollars, which does not scale with underlying price, so the delta-targeted
+width can be unaffordable on an expensive name. The selector builds every viable
+width and lets the budget filter choose. *Trade-off:* more structures built per
+expiration, and a delta-fit tiebreaker is needed so selection does not drift to
+odd strikes.
+
 **Conservative entry pricing.** Cost assumes paying the ask and selling the bid.
 A mid fill is an assumption, not a fact. Both are reported.
 *Trade-off:* every reward/risk figure is pessimistic by roughly half the spread.

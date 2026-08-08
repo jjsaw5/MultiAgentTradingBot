@@ -81,6 +81,14 @@ class TradeCandidate(Base):
     invalidation_thesis: str = Field(
         min_length=10, description="The observable condition that proves this trade wrong."
     )
+    invalidation_price: float | None = Field(
+        default=None,
+        gt=0,
+        description="The underlying price at which the thesis is abandoned. This is the "
+        "machine-readable half of `invalidation_thesis`, and it is what the risk model "
+        "measures risk against -- without it, risk falls back to the whole debit, which "
+        "overstates the loss a managed trade would actually take.",
+    )
     known_risks: list[str] = Field(default_factory=list)
 
     earnings_date: date | None = None

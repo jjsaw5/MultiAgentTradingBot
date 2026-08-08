@@ -167,13 +167,33 @@ class RiskReward(Base):
     """Reward/risk assessment for a proposed trade at a stated price target."""
 
     structure_id: str
-    max_loss: float
+    max_loss: float = Field(description="The whole debit -- the worst case if held to zero.")
     max_profit: float | None
     breakeven: float
     breakeven_move_pct: float
     target_underlying_price: float
     expected_value_at_target: float | None = None
-    reward_to_risk: float | None = None
+
+    reward_to_risk: float | None = Field(
+        default=None,
+        description="Profit at target divided by the loss taken at the invalidation "
+        "level. Falls back to the full debit as the denominator when no "
+        "invalidation level is available.",
+    )
+    return_on_premium_at_target: float | None = Field(
+        default=None,
+        description="Profit at target as a multiple of the full debit. Reported "
+        "alongside reward_to_risk because they answer different questions.",
+    )
+
+    invalidation_underlying_price: float | None = None
+    value_at_invalidation: float | None = Field(
+        default=None, description="Modelled position value if the thesis level breaks."
+    )
+    risk_to_invalidation: float | None = Field(
+        default=None, description="Dollars actually at risk before the trade is abandoned."
+    )
+
     theta_burn_over_holding_period: float | None = None
     theta_burn_pct_of_premium: float | None = None
     iv_contraction_sensitivity: float | None = Field(

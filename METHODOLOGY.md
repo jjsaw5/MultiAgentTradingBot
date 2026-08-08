@@ -160,15 +160,43 @@ enforced.
 through the configured budget cap. A far-OTM lottery ticket is cheap and almost
 always wrong.
 
+**Structures are searched, not assumed.** For a vertical the selector builds
+every viable width rather than committing to the one closest to the delta
+target. Width is configured in dollars, so on a high-priced underlying the
+delta-targeted spread can cost several times the per-trade budget; searching
+lets the budget filter pick a narrower spread instead of discarding the idea.
+Budget is a *filter*, not a preference — among affordable structures, the
+cheaper one still gets no advantage.
+
 `risk.py` then prices the structure by re-pricing every leg with Black-Scholes
 at the end of the holding period, underlying at the thesis target, IV held
-constant. Two assumptions are made explicit rather than buried:
+constant.
+
+**Risk is measured to the invalidation level, not to zero.** This is the single
+most consequential modelling choice in the system. You do not lose the whole
+premium on a losing trade; you exit when the thesis breaks. So:
+
+```
+reward_to_risk = (value at target − cost) / (cost − value at invalidation)
+```
+
+Risk to the stop, reward to the target — the ratio a trader actually reasons
+about. The earlier formulation divided by the full debit, which meant a 1.0
+threshold silently demanded a *+100% return on premium* and rejected nearly
+everything. `return_on_premium_at_target` is still reported, because it answers
+a real but different question.
+
+Four assumptions are made explicit rather than buried:
 
 - **Entry cost assumes paying the ask and selling the bid.** A mid fill is an
   assumption, not a fact; both figures are reported.
 - **IV is held flat**, which is wrong around events. The dollar impact of a
-  5-point IV contraction is therefore reported separately, so the assumption is
-  visible.
+  5-point IV contraction is therefore reported separately.
+- **The stop is modelled a third of the way through the holding period**, since
+  a level that breaks usually breaks early.
+- **A stop inside 1 ATR is widened for modelling.** A stop within daily noise
+  would be taken out by ordinary movement and would flatter reward/risk by
+  shrinking the denominator. The adjustment appears in the report.
 
 ---
 

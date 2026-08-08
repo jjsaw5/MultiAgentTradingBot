@@ -126,7 +126,7 @@ def test_a_spread_costing_too_much_of_its_width_is_refused(methodology):
     cand = make_candidate(strategy=StrategyType.BULL_CALL_SPREAD)
     outcome = select_contracts(cand, build_chain(), tight, today=TODAY, underlying_price=120.0)
     assert outcome.trade is None
-    assert any("exceeds" in r for r in outcome.reasons)
+    assert any("debit above" in r for r in outcome.reasons)
 
 
 def test_no_eligible_expiration_returns_a_reason_not_a_guess(methodology):
@@ -162,3 +162,55 @@ def test_alternatives_are_ranked_by_tradability_not_cheapness(methodology):
     for alt in outcome.alternatives:
         chosen_spread = outcome.trade.worst_leg_spread_pct or 1.0
         assert (alt.worst_leg_spread_pct or 1.0) >= chosen_spread - 1e-9
+
+
+# ------------------------------------------------------------------- budget
+def test_over_budget_structures_are_dropped_when_affordable_ones_exist(methodology):
+    cand = make_candidate(strategy=StrategyType.LONG_CALL)
+    outcome = select_contracts(
+        cand,
+        build_chain(),
+        methodology.contract_selection,
+        today=TODAY,
+        underlying_price=120.0,
+        max_premium_usd=500.0,
+    )
+    assert outcome.trade is not None
+    assert outcome.trade.max_loss <= 500.0
+    for alt in outcome.alternatives:
+        assert alt.max_loss <= 500.0
+
+
+def test_budget_filters_but_does_not_prefer_the_cheapest(methodology):
+    """Affordability is a gate; tradability still decides among survivors."""
+    cand = make_candidate(strategy=StrategyType.LONG_CALL)
+    chain = build_chain()
+    outcome = select_contracts(
+        cand, chain, methodology.contract_selection,
+        today=TODAY, underlying_price=120.0, max_premium_usd=100_000.0,
+    )
+    unconstrained = outcome.trade
+    assert unconstrained is not None
+    # With an effectively unlimited budget the choice is purely tradability,
+    # so it is not simply the cheapest contract available.
+    cheapest = min(
+        (c for c in chain.contracts if c.right is OptionRight.CALL and c.ask),
+        key=lambda c: c.ask,
+    )
+    assert unconstrained.long_leg.contract.ask > cheapest.ask
+
+
+def test_when_nothing_fits_the_cheapest_is_carried_forward_to_be_rejected(methodology):
+    """The report should say "costs $X, budget is $Y", not "no contract found"."""
+    cand = make_candidate(strategy=StrategyType.LONG_CALL)
+    outcome = select_contracts(
+        cand,
+        build_chain(),
+        methodology.contract_selection,
+        today=TODAY,
+        underlying_price=120.0,
+        max_premium_usd=1.0,
+    )
+    assert outcome.trade is not None
+    assert outcome.trade.max_loss > 1.0
+    assert any("budget" in r for r in outcome.reasons)

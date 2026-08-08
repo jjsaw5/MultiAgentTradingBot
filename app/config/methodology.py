@@ -206,6 +206,11 @@ class HardRejectionRules(_Frozen):
     require_validated_catalyst: bool
 
 
+class RiskModelConfig(_Frozen):
+    invalidation_exit_fraction: float
+    min_stop_distance_atr: float
+
+
 class ContractSelectionRules(_Frozen):
     preferred_dte_min: int
     preferred_dte_max: int
@@ -256,6 +261,7 @@ class Methodology(_Frozen):
     score_weights: ScoreWeights
     scoring: ScoringRules
     hard_rejections: HardRejectionRules
+    risk_model: RiskModelConfig
     contract_selection: ContractSelectionRules
     event_risk: EventRiskRules
     market_schedule: MarketScheduleConfig
@@ -304,4 +310,10 @@ def reset_methodology_cache() -> None:
     get_methodology.cache_clear()
 
 
-__all__ = ["Methodology", "get_methodology", "load_methodology", "reset_methodology_cache"]
+__all__ = [
+    "Methodology",
+    "RiskModelConfig",
+    "get_methodology",
+    "load_methodology",
+    "reset_methodology_cache",
+]

@@ -171,15 +171,43 @@ a vertical is only as tradable as its worse side.
 
 ## Component 7 — Risk / Reward (15)
 
-Config: `scoring.risk_reward`
+Config: `scoring.risk_reward`, `risk_model`
 
 Reward/risk is modelled by re-pricing every leg with Black-Scholes at the end of
 the intended holding period, with the underlying at the thesis target and IV
 unchanged. Entry cost assumes paying the ask and selling the bid.
 
+**Risk is measured to the invalidation level, not to zero:**
+
+```
+reward_to_risk = (value at target − cost) / (cost − value at invalidation)
+```
+
+You do not lose the full premium on a losing trade — you exit when the thesis
+breaks. Measuring reward-to-target against risk-to-zero compares two different
+things and systematically penalises long premium for a loss that would never be
+taken. When no invalidation level is available the denominator falls back to the
+full debit and `method_notes` says so.
+
+Two guards keep this honest:
+
+- **The stop is modelled part-way through the holding period**
+  (`risk_model.invalidation_exit_fraction`, default 1/3). A level that breaks
+  usually breaks early; charging the trade a full holding period of decay on a
+  stop-out overstates the loss.
+- **A stop closer than `risk_model.min_stop_distance_atr` (default 1.0) ATR is
+  widened for modelling.** A stop inside ordinary daily noise is not a stop —
+  it would be taken out by routine movement, and it flatters reward/risk by
+  shrinking the denominator toward zero. The adjustment is reported.
+
+`return_on_premium_at_target` is reported alongside — profit as a multiple of
+the full debit — but scores no points. It answers a different question: *what do
+I make on the premium*, versus *what do I risk to make it*.
+
 | Rule | Points |
 | --- | ---: |
 | `reward_to_risk` | ≥3.0 → 8.0 · ≥2.0 → 6.0 · ≥1.5 → 4.0 · ≥1.0 → 2.0 · below → 0 |
+| `return_on_premium_at_target` | 0.0 — reported for context, scores nothing |
 | `max_loss_within_budget` | 3.0 when total cost ≤ `max_premium_per_trade_usd` |
 | `breakeven_vs_expected_move` | 4.0 when breakeven needs ≤50% of the expected move · 2.0 at ≤80% · 0 beyond |
 
@@ -216,8 +244,8 @@ Config: `hard_rejections`. Evaluated in `app/rules/hard_rejections.py`.
 | `CATALYST_NOT_VALIDATED` | Validator verdict CONTRADICTED or DATA_UNAVAILABLE | — |
 | `EARNINGS_BLACKOUT` | Earnings inside holding period + buffer | 3 days before, 1 after — waived when earnings *is* the thesis |
 | `PROVIDER_DISAGREEMENT` | Unreconciled cross-provider price gap | > 2% |
-| `REWARD_RISK_TOO_LOW` | Modelled reward/risk | < 1.0 |
-| `PREMIUM_EXCEEDS_LIMIT` | Total cost of the position | > $1,500 |
+| `REWARD_RISK_TOO_LOW` | Modelled reward/risk, measured to the invalidation level | < 1.0 |
+| `PREMIUM_EXCEEDS_LIMIT` | Total cost of the position | > $500 |
 | `EXCESSIVE_THETA` | Theta × holding days as a share of premium | > 60% |
 | `NO_TRADABLE_CONTRACT` | Selection could not assemble a structure | — |
 | `STRATEGY_NOT_ALLOWED` | Strategy outside the configured allowlist | — |

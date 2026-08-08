@@ -138,7 +138,13 @@ def _ranked_trade(c: Console, t: RankedTrade, *, show_audit: bool) -> None:
         "Debit",
         f"{t.trade.net_debit_conservative:.2f} conservative / {t.trade.net_debit_mid:.2f} mid",
     )
-    spec.add_row("Max loss", f"${t.risk_reward.max_loss:,.0f}")
+    spec.add_row("Max loss", f"${t.risk_reward.max_loss:,.0f} (full debit)")
+    if t.risk_reward.risk_to_invalidation is not None:
+        spec.add_row(
+            "Risk to invalidation",
+            f"${t.risk_reward.risk_to_invalidation:,.0f} at "
+            f"{t.risk_reward.invalidation_underlying_price:.2f}",
+        )
     spec.add_row(
         "Max profit",
         f"${t.trade.max_profit:,.0f}" if t.trade.max_profit is not None else "undefined (long option)",
@@ -146,7 +152,15 @@ def _ranked_trade(c: Console, t: RankedTrade, *, show_audit: bool) -> None:
     spec.add_row("Breakeven", f"{t.trade.breakeven:.2f}  ({t.trade.breakeven_move_pct:.2f}% move)")
     spec.add_row(
         "Reward / risk",
-        f"{t.risk_reward.reward_to_risk:.2f}" if t.risk_reward.reward_to_risk is not None else "n/a",
+        f"{t.risk_reward.reward_to_risk:.2f}  [dim]to invalidation[/dim]"
+        if t.risk_reward.reward_to_risk is not None
+        else "n/a",
+    )
+    spec.add_row(
+        "Return on premium",
+        f"{t.risk_reward.return_on_premium_at_target:+.0%} at target"
+        if t.risk_reward.return_on_premium_at_target is not None
+        else "n/a",
     )
     spec.add_row("Net delta", _num(t.trade.net_delta))
     spec.add_row("IV (long leg)", _pct(long_c.implied_volatility))

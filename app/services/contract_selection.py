@@ -155,6 +155,7 @@ def select_contracts(
     *,
     today: date,
     underlying_price: float,
+    max_premium_usd: float | None = None,
 ) -> SelectionOutcome:
     reasons: list[str] = []
     right = candidate.strategy_type.option_right
@@ -178,6 +179,9 @@ def select_contracts(
 
     expirations.sort(key=lambda e: _expiration_rank(e, today, rules))
     built: list[ProposedTrade] = []
+    #: How far each structure's short leg sits from the configured delta target.
+    #: Used to break ties between equally tradable widths.
+    delta_fit: dict[str, float] = {}
 
     for exp in expirations[:3]:
         contracts = [c for c in chain.by_expiration(exp, right) if _usable(c)]
@@ -201,25 +205,37 @@ def select_contracts(
                 <= abs(c.strike - long_c.strike)
                 <= rules.spread_max_width
             ]
-            short_c = _closest_by_delta(short_pool, rules.spread_short_delta_target)
-            if short_c is None:
+            if not short_pool:
                 reasons.append(
                     f"{exp}: no short strike inside the configured "
                     f"{rules.spread_min_width}-{rules.spread_max_width} width band."
                 )
                 continue
-            trade = _build_vertical(candidate, long_c, short_c, underlying_price)
-            width = trade.spread_width or 0.0
-            if width <= 0 or trade.net_debit_conservative <= 0:
-                reasons.append(f"{exp}: degenerate spread pricing, skipped.")
-                continue
-            if trade.net_debit_conservative > rules.spread_max_debit_pct_of_width * width:
-                reasons.append(
-                    f"{exp}: debit {trade.net_debit_conservative:.2f} exceeds "
-                    f"{rules.spread_max_debit_pct_of_width:.0%} of the {width:.2f} width."
+
+            # Build every viable width rather than committing to the one
+            # closest to the delta target. Width is configured in dollars, so
+            # on a high-priced underlying the delta-targeted spread can cost
+            # far more than the account allows; searching lets the budget
+            # filter downstream pick a narrower spread instead of rejecting
+            # the whole idea.
+            priced_out = 0
+            for short_c in sorted(short_pool, key=lambda c: abs(c.strike - long_c.strike)):
+                trade = _build_vertical(candidate, long_c, short_c, underlying_price)
+                width = trade.spread_width or 0.0
+                if width <= 0 or trade.net_debit_conservative <= 0:
+                    continue
+                if trade.net_debit_conservative > rules.spread_max_debit_pct_of_width * width:
+                    priced_out += 1
+                    continue
+                delta_fit[trade.structure_id] = abs(
+                    abs(short_c.delta) - rules.spread_short_delta_target  # type: ignore[arg-type]
                 )
-                continue
-            built.append(trade)
+                built.append(trade)
+            if priced_out:
+                reasons.append(
+                    f"{exp}: {priced_out} width(s) rejected for a debit above "
+                    f"{rules.spread_max_debit_pct_of_width:.0%} of the width."
+                )
         else:
             contract = _closest_by_delta(
                 contracts,
@@ -236,7 +252,32 @@ def select_contracts(
         reasons.append("No tradable structure could be assembled from the live chain.")
         return SelectionOutcome(None, [], reasons)
 
-    built.sort(key=_quality_key)
+    # Budget is a filter, not a preference. Structures the account cannot fund
+    # are dropped when affordable ones exist, but among affordable structures
+    # the cheaper one gets no advantage -- tradability still decides.
+    if max_premium_usd is not None:
+        affordable = [t for t in built if t.max_loss <= max_premium_usd]
+        if affordable:
+            dropped = len(built) - len(affordable)
+            if dropped:
+                reasons.append(
+                    f"{dropped} structure(s) discarded for exceeding the "
+                    f"${max_premium_usd:,.0f} per-trade budget."
+                )
+            built = affordable
+        else:
+            # Nothing fits. Carry the cheapest tradable structure forward anyway
+            # so the hard-rejection rule reports the real cost, rather than the
+            # report saying "no contract found" and hiding why.
+            reasons.append(
+                f"No structure fits the ${max_premium_usd:,.0f} per-trade budget; the "
+                "cheapest tradable one is carried forward so the shortfall is visible."
+            )
+            built.sort(key=lambda t: t.max_loss)
+            keep = built[: rules.max_candidate_contracts_per_trade]
+            return SelectionOutcome(trade=keep[0], alternatives=keep[1:], reasons=reasons)
+
+    built.sort(key=lambda t: (*_quality_key(t), delta_fit.get(t.structure_id, 0.0)))
     keep = built[: rules.max_candidate_contracts_per_trade]
     return SelectionOutcome(trade=keep[0], alternatives=keep[1:], reasons=reasons)
 

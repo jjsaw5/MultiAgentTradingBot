@@ -67,10 +67,14 @@ def render(report: TradeReport) -> str:
             a(f"| Short strike | {short.contract.strike:.2f} {short.contract.right.value} |")
             a(f"| Width | {t.trade.spread_width:.2f} |")
         a(f"| Debit | {t.trade.net_debit_conservative:.2f} (mid {t.trade.net_debit_mid:.2f}) |")
-        a(f"| Max loss | ${t.risk_reward.max_loss:,.0f} |")
+        a(f"| Max loss (full debit) | ${t.risk_reward.max_loss:,.0f} |")
+        if t.risk_reward.risk_to_invalidation is not None:
+            a(f"| Risk to invalidation | ${t.risk_reward.risk_to_invalidation:,.0f} "
+              f"at {t.risk_reward.invalidation_underlying_price:.2f} |")
         a(f"| Max profit | {f'${t.trade.max_profit:,.0f}' if t.trade.max_profit is not None else 'undefined'} |")
         a(f"| Breakeven | {t.trade.breakeven:.2f} ({t.trade.breakeven_move_pct:.2f}% move) |")
-        a(f"| Reward/risk | {t.risk_reward.reward_to_risk if t.risk_reward.reward_to_risk is not None else 'n/a'} |")
+        a(f"| Reward/risk (to invalidation) | {t.risk_reward.reward_to_risk if t.risk_reward.reward_to_risk is not None else 'n/a'} |")
+        a(f"| Return on premium at target | {f'{t.risk_reward.return_on_premium_at_target:+.0%}' if t.risk_reward.return_on_premium_at_target is not None else 'n/a'} |")
         a(f"| Net delta | {t.trade.net_delta} |")
         a(f"| IV (long leg) | {long_c.implied_volatility} |")
         a(f"| Bid/ask | {long_c.bid} / {long_c.ask} |")

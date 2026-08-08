@@ -133,6 +133,9 @@ def make_candidate(
     catalyst_type: CatalystType = CatalystType.MAJOR_CONTRACT,
     earnings: date | None = None,
     catalyst_date: date | None = None,
+    # Matches make_technicals(support=116.0) so the prose invalidation and the
+    # number the risk model uses describe the same level.
+    invalidation_price: float | None = 116.0,
 ) -> TradeCandidate:
     return TradeCandidate(
         run_id=RUN_ID,
@@ -148,7 +151,8 @@ def make_candidate(
         expected_move=ExpectedMove(percent=expected_move, rationale="test"),
         underlying_reference_price=120.0,
         technical_context=TechnicalContext(trend_description="uptrend"),
-        invalidation_thesis="A close below 110 invalidates this.",
+        invalidation_thesis="A daily close below 116.00 invalidates this.",
+        invalidation_price=invalidation_price,
         earnings_date=earnings,
         catalyst_date=catalyst_date,
         preliminary_quality=PreliminaryQuality.PLAUSIBLE,
@@ -218,18 +222,22 @@ def make_flow(
 
 def make_contract(
     *,
-    strike: float = 120.0,
+    # Defaults describe a slightly OTM 45-DTE call on a $120 underlying at 40 IV.
+    # The price and greeks are Black-Scholes-consistent with those inputs, and
+    # the $454 cost sits inside the configured per-trade budget, so the baseline
+    # fixture represents a trade that should genuinely survive the hard rules.
+    strike: float = 126.0,
     right: OptionRight = OptionRight.CALL,
     dte: int = 45,
-    bid: float = 7.9,
-    ask: float = 8.1,
+    bid: float = 4.49,
+    ask: float = 4.59,
     volume: int = 1500,
     oi: int = 5000,
     iv: float = 0.40,
     iv_rank: float = 35.0,
-    delta: float = 0.50,
-    theta: float = -8.0,
-    vega: float = 15.0,
+    delta: float = 0.41,
+    theta: float = -7.81,
+    vega: float = 16.34,
 ) -> OptionContract:
     return OptionContract(
         symbol=f"NVDA{strike:.0f}{right.value[0]}",
@@ -341,6 +349,9 @@ def make_context(
             expected_move_pct=candidate.expected_move.percent,
             direction_sign=candidate.direction.sign,
             holding_days=candidate.expected_holding_period.approx_days,
+            invalidation_price=candidate.invalidation_price,
+            atr=(technicals.atr14 if technicals is not None else None),
+            risk_model=methodology.risk_model,
             reference_day=TODAY,
         )
 

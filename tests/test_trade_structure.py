@@ -15,7 +15,11 @@ from tests.conftest import make_candidate, make_contract, make_trade
 
 def test_long_call_risk_is_the_premium_paid():
     cand = make_candidate(strategy=StrategyType.LONG_CALL)
-    trade = make_trade(cand, legs=[Leg(action="BUY", quantity=1, contract=make_contract(ask=8.1))])
+    # Strike stated explicitly: this test pins arithmetic, so it must not move
+    # when the shared fixture's default strike changes.
+    trade = make_trade(
+        cand, legs=[Leg(action="BUY", quantity=1, contract=make_contract(strike=120.0, ask=8.1))]
+    )
 
     assert trade.net_debit_conservative == 8.1
     assert trade.max_loss == 810.0

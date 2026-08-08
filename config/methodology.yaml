@@ -182,8 +182,11 @@ hard_rejections:
   max_bid_ask_spread_pct: 0.10        # of mid price, per leg
   min_option_volume: 100
   min_open_interest: 250
+  # Reward/risk is measured to the invalidation level, not to zero -- see
+  # app/services/risk.py. A floor of 1.0 therefore means the honest thing:
+  # never risk more than you stand to make.
   min_reward_to_risk: 1.0
-  max_premium_per_trade_usd: 1500.0   # total debit for 1 contract/spread
+  max_premium_per_trade_usd: 500.0    # total debit for 1 contract/spread
   max_theta_burn_pct_of_premium: 0.60 # theta * holding days / premium
   # Earnings inside the holding period is prohibited unless the candidate's
   # primary catalyst IS the earnings event and the strategy is defined risk.
@@ -200,6 +203,20 @@ hard_rejections:
     - expiration
     - strike
   require_validated_catalyst: true
+
+# --- Risk model -----------------------------------------------------------
+# How the reward/risk projection treats the exit.
+risk_model:
+  # A level that breaks usually breaks early, so the stop is modelled as being
+  # hit this far through the holding period rather than at the planned exit.
+  # Modelling it at the full horizon would charge the trade decay it never
+  # actually suffers.
+  invalidation_exit_fraction: 0.33
+  # A stop closer than this many ATRs is not a stop, it is noise: it would be
+  # taken out by ordinary daily movement, and it flatters reward/risk by
+  # shrinking the denominator. Stops tighter than this are widened to this
+  # distance for modelling purposes, and the report says so.
+  min_stop_distance_atr: 1.0
 
 # --- Contract selection preferences ---------------------------------------
 contract_selection:
