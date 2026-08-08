@@ -371,18 +371,29 @@ Listed because they are real, not because they are theoretical.
 6. **Single-name scoring only.** Nothing looks across the ranked set for
    correlated exposure — five semiconductor calls score as five independent
    trades. This is what the Risk Reviewer is designed to catch.
-7. **The heuristic path is not a substitute for reasoning.** It produces
-   structurally valid, defensible candidates, but it cannot read a filing or
-   notice that a headline contradicts itself. Real credentials change the
-   quality of the pipeline, not just its data.
+7. **The heuristic path cannot classify real news — confirmed against live
+   data.** A scan over five real tickers with live FMP news produced 51
+   catalysts, of which **50 were `OTHER`**. The provider deliberately does not
+   classify catalyst type (that is the agent's job, and a provider asserting an
+   interpretation would corrupt the evidence chain), and the heuristic
+   fallback cannot classify either. Only the earnings-calendar catalyst — which
+   arrives pre-typed — survived to become a candidate.
+
+   The consequence is concrete: **with real news, `LLM_BACKEND=anthropic` is
+   required, not optional.** The heuristic path exists so the pipeline runs and
+   is testable without credentials; it is not a degraded-but-usable production
+   mode. Mock runs look healthy only because the mock provider pre-classifies.
 
 ---
 
 ## Roadmap
 
-**Milestone 2 — real data.** FMP and Unusual Whales REST clients against live
-keys, Robinhood MCP wired through a runtime that has tool access, a real news
-provider, and a live-vs-mock comparison harness.
+**Milestone 2 — real data.** FMP is done and verified against a live key.
+Remaining: Unusual Whales against a live key, Robinhood MCP wired through a
+runtime with tool access, the screening funnel, and automatic shadow-tracking
+of every recommendation (including rejects) so an outcome dataset accumulates
+without waiting on manual entry. The LLM path becomes mandatory here — see
+weakness 7.
 
 **Milestone 3 — the Risk Reviewer.** Wire `.claude/agents/risk-reviewer.md`
 into the pipeline with demotion-only authority and cross-candidate correlation

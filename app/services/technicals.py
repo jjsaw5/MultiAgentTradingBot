@@ -132,6 +132,14 @@ def compute_snapshot(
     if len(bars) >= 2 and bars[-1].open:
         gap_pct = round((bars[-1].open / bars[-2].close - 1) * 100, 3)
 
+    # Some providers omit average volume from the quote. Deriving it from the
+    # history we already hold is cheaper and more consistent than a second
+    # request, and keeps relative volume available rather than silently absent.
+    relative_volume = quote.relative_volume if quote else None
+    if relative_volume is None and quote and quote.volume and len(bars) >= 21:
+        avg = sum(b.volume for b in bars[-21:-1]) / 20
+        relative_volume = round(quote.volume / avg, 3) if avg else None
+
     rel_strength = None
     if benchmark is not None:
         b_closes = benchmark.closes()
@@ -157,7 +165,7 @@ def compute_snapshot(
         resistance=resistance,
         range_high_20d=round(max(b.high for b in bars[-20:]), 4) if len(bars) >= 20 else None,
         range_low_20d=round(min(b.low for b in bars[-20:]), 4) if len(bars) >= 20 else None,
-        relative_volume=quote.relative_volume if quote else None,
+        relative_volume=relative_volume,
         gap_pct=gap_pct,
         higher_highs=higher_highs(bars),
         lower_lows=lower_lows(bars),
