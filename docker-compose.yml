@@ -1,0 +1,38 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: matb
+      POSTGRES_PASSWORD: matb
+      POSTGRES_DB: matb
+    ports:
+      - "5432:5432"
+    volumes:
+      - matb_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U matb"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://matb:matb@db:5432/matb
+      # Credentials are read from .env, never baked into the image.
+      LLM_BACKEND: ${LLM_BACKEND:-scripted}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      FMP_BACKEND: ${FMP_BACKEND:-mock}
+      FMP_API_KEY: ${FMP_API_KEY:-}
+      UNUSUAL_WHALES_BACKEND: ${UNUSUAL_WHALES_BACKEND:-mock}
+      UNUSUAL_WHALES_API_KEY: ${UNUSUAL_WHALES_API_KEY:-}
+      ROBINHOOD_BACKEND: ${ROBINHOOD_BACKEND:-mock}
+      LOG_FORMAT: json
+    ports:
+      - "8000:8000"
+
+volumes:
+  matb_pgdata:

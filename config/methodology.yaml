@@ -1,0 +1,260 @@
+# =============================================================================
+# TRADING METHODOLOGY CONFIGURATION
+#
+# This file is the single source of truth for every methodology constant.
+# No thresholds may be hard-coded in application logic; if you find one,
+# that is a bug. Changing this file changes how trades are scored and
+# rejected -- and the values used for a run are snapshotted into the
+# database (market_runs.methodology_snapshot) so historical recommendations
+# remain reproducible.
+# =============================================================================
+
+version: "1.0.0"
+
+# --- Pipeline shape -------------------------------------------------------
+pipeline:
+  max_candidates_per_run: 10
+  # Agent 2 is explicitly permitted to return zero candidates.
+  allow_empty_candidate_set: true
+  # Reject candidates whose thesis has no identifiable catalyst at all.
+  require_primary_catalyst: true
+
+# --- Allowed strategies (defined-risk only) -------------------------------
+strategies:
+  allowed:
+    - LONG_CALL
+    - LONG_PUT
+    - BULL_CALL_SPREAD
+    - BEAR_PUT_SPREAD
+
+# --- Score classification bands -------------------------------------------
+# Evaluated top-down; first band whose `min` is met wins.
+classification_bands:
+  - { name: EXCEPTIONAL,     min: 90, label: "Exceptional" }
+  - { name: HIGH_CONVICTION, min: 80, label: "High conviction" }
+  - { name: GOOD_CANDIDATE,  min: 70, label: "Good candidate" }
+  - { name: WATCHLIST,       min: 60, label: "Watchlist / conditional" }
+  - { name: REJECTED,        min: 0,  label: "Reject" }
+
+# Candidates below this are not presented as actionable, but ARE persisted.
+min_presentable_score: 60
+
+# --- Score weights (must sum to 100) --------------------------------------
+score_weights:
+  catalyst_strength: 15
+  market_alignment: 10
+  technical_setup: 20
+  options_flow: 15
+  iv_greeks: 10
+  contract_liquidity: 10
+  risk_reward: 15
+  data_quality: 5
+
+# --- Component rule parameters --------------------------------------------
+# Every number a scoring rule consults lives here.
+scoring:
+
+  catalyst_strength:
+    importance_points: 6.0          # scaled by catalyst importance 0..1
+    evidence_quality_points:
+      CONFIRMED_FACT: 4.0
+      REPORTED: 2.5
+      INTERPRETATION: 1.0
+      RUMOR: 0.0
+      UNVERIFIED: 0.0
+    recency_days_full: 2            # <= this many days old -> full recency pts
+    recency_days_partial: 5
+    recency_points_full: 2.0
+    recency_points_partial: 1.0
+    timing_points: 3.0              # catalyst date falls inside holding period
+    priced_in_penalty: -3.0
+    supporting_catalyst_points_each: 0.5
+    supporting_catalyst_points_cap: 1.5
+
+  market_alignment:
+    spy_aligned_points: 4.0
+    spy_neutral_points: 2.0
+    spy_fighting_points: 0.0
+    qqq_aligned_points: 2.0
+    qqq_neutral_points: 1.0
+    qqq_fighting_points: 0.0
+    sector_aligned_points: 2.0
+    sector_fighting_penalty: -1.0
+    relative_strength_threshold: 0.0   # 20d RS vs SPY, in percentage points
+    relative_strength_points: 2.0
+
+  technical_setup:
+    trend_alignment_points: 6.0     # price vs SMA20 vs SMA50 stacked correctly
+    trend_partial_points: 3.0       # price on the right side of SMA20 only
+    key_level_points: 4.0           # holding support (bull) / rejecting resistance (bear)
+    relative_volume_strong: 1.5
+    relative_volume_ok: 1.2
+    relative_volume_weak: 0.8
+    relative_volume_points_strong: 3.0
+    relative_volume_points_ok: 2.0
+    relative_volume_penalty_weak: -1.0
+    momentum_points: 4.0
+    rsi_bull_range: [45, 70]
+    rsi_bear_range: [30, 55]
+    rsi_overextended_bull: 78
+    rsi_overextended_bear: 22
+    overextension_penalty: -2.0
+    # Overhead resistance (bull) / underlying support (bear) proximity penalty
+    blocking_level_pct_severe: 1.0
+    blocking_level_pct_moderate: 3.0
+    blocking_level_penalty_severe: -3.0
+    blocking_level_penalty_moderate: -1.0
+    # Expected move must be achievable given realized volatility
+    atr_feasibility_points: 3.0
+    atr_feasibility_max_multiple: 2.5   # expected move <= N * ATR over holding period
+
+  options_flow:
+    directional_premium_points: 6.0   # scaled by directional premium share
+    directional_premium_floor: 0.50   # 50% share = 0 pts, 100% = full pts
+    ask_side_points: 3.0
+    ask_side_floor: 0.50
+    sweep_points: 2.0
+    sweep_min_count: 3
+    new_position_points: 2.0
+    volume_oi_ratio_new_position: 1.0
+    delta_flow_points: 2.0
+    contradiction_threshold: 0.35     # directional share below this = flow opposes thesis
+    contradiction_penalty: -6.0
+    insufficient_data_points: 0.0     # missing flow scores zero; it never invents credit
+
+  iv_greeks:
+    # Long premium strategies prefer lower IV rank; verticals tolerate more.
+    iv_rank_bands_long_premium:
+      - { max: 30, points: 4.0 }
+      - { max: 50, points: 3.0 }
+      - { max: 70, points: 1.5 }
+      - { max: 101, points: 0.0 }
+    iv_rank_bands_spread:
+      - { max: 30, points: 3.0 }
+      - { max: 50, points: 3.5 }
+      - { max: 70, points: 3.0 }
+      - { max: 101, points: 2.0 }
+    iv_expected_move_points: 2.0
+    iv_expected_move_tolerance: 0.5   # |thesis move / iv-implied move - 1| <= tol
+    theta_burden_points: 2.0
+    theta_burden_max_pct_of_premium: 0.35  # theta*holding_days / premium
+    vega_points: 2.0
+    vega_max_pct_of_premium_per_iv_pt: 0.03
+
+  contract_liquidity:
+    spread_pct_excellent: 0.02
+    spread_pct_good: 0.05
+    spread_pct_acceptable: 0.10
+    spread_points_excellent: 4.0
+    spread_points_good: 3.0
+    spread_points_acceptable: 1.5
+    open_interest_strong: 2500
+    open_interest_ok: 750
+    open_interest_points_strong: 3.0
+    open_interest_points_ok: 1.5
+    volume_strong: 750
+    volume_ok: 200
+    volume_points_strong: 3.0
+    volume_points_ok: 1.5
+
+  risk_reward:
+    rr_bands:
+      - { min: 3.0, points: 8.0 }
+      - { min: 2.0, points: 6.0 }
+      - { min: 1.5, points: 4.0 }
+      - { min: 1.0, points: 2.0 }
+    max_loss_within_budget_points: 3.0
+    breakeven_points: 4.0
+    # Required move to breakeven must be a modest fraction of the expected move
+    breakeven_vs_expected_move_full: 0.50
+    breakeven_vs_expected_move_partial: 0.80
+    breakeven_points_partial: 2.0
+
+  data_quality:
+    all_providers_responded_points: 2.0
+    price_agreement_points: 2.0
+    price_agreement_tolerance_pct: 0.005   # 0.5%
+    freshness_points: 1.0
+
+# --- Hard rejection rules -------------------------------------------------
+# A hard failure is absolute. No score in any other category can override it.
+hard_rejections:
+  max_bid_ask_spread_pct: 0.10        # of mid price, per leg
+  min_option_volume: 100
+  min_open_interest: 250
+  min_reward_to_risk: 1.0
+  max_premium_per_trade_usd: 1500.0   # total debit for 1 contract/spread
+  max_theta_burn_pct_of_premium: 0.60 # theta * holding days / premium
+  # Earnings inside the holding period is prohibited unless the candidate's
+  # primary catalyst IS the earnings event and the strategy is defined risk.
+  earnings_blackout_days_before: 3
+  earnings_blackout_days_after: 1
+  allow_earnings_when_catalyst_is_earnings: true
+  # Cross-provider underlying price disagreement that cannot be reconciled.
+  max_provider_price_disagreement_pct: 0.02
+  # Data that must be present or the candidate is rejected outright.
+  required_fields:
+    - underlying_price
+    - option_bid
+    - option_ask
+    - expiration
+    - strike
+  require_validated_catalyst: true
+
+# --- Contract selection preferences ---------------------------------------
+contract_selection:
+  preferred_dte_min: 21
+  preferred_dte_max: 60
+  absolute_dte_min: 7
+  absolute_dte_max: 120
+  # Long single-leg options
+  long_option_delta_min: 0.35
+  long_option_delta_max: 0.65
+  long_option_delta_target: 0.45
+  # Vertical debit spreads
+  spread_long_delta_target: 0.55
+  spread_short_delta_target: 0.30
+  spread_min_width: 2.5
+  spread_max_width: 25.0
+  spread_max_debit_pct_of_width: 0.60
+  # Buffer added past the catalyst date when choosing expiration
+  min_days_past_catalyst: 5
+  # The contract must still hold meaningful extrinsic value at the planned
+  # exit. Without this buffer the selector happily picks an expiration a day
+  # or two past the holding period, which makes every long-premium trade look
+  # like a theta disaster purely because it was modelled at expiry.
+  min_days_beyond_holding_period: 21
+  max_candidate_contracts_per_trade: 3
+
+# --- Event-risk windows ---------------------------------------------------
+event_risk:
+  # Macro events that flatten conviction across the whole book.
+  high_impact_macro_events: [CPI, PPI, PCE, FOMC, NFP, GDP]
+  # Candidates whose holding period spans one of these get a flag, not a reject.
+  macro_event_flag_days: 2
+
+# --- Market schedule (US equity options) ----------------------------------
+market_schedule:
+  timezone: America/New_York
+  premarket_start: "04:00"
+  regular_open: "09:30"
+  regular_close: "16:00"
+  # Option quotes are not considered actionable before this time.
+  options_quote_valid_from: "09:35"
+  postmarket_end: "20:00"
+  # Quote staleness limits, in seconds, by workflow stage.
+  max_quote_age_seconds_live: 300
+  max_quote_age_seconds_premarket: 86400
+
+# --- Provider policy ------------------------------------------------------
+providers:
+  timeout_seconds: 15
+  max_retries: 2
+  # Providers whose absence rejects the candidate (vs merely flagging it).
+  # These are the providers Agent 3 consults during validation; the news
+  # provider is an Agent 1 input and is deliberately not listed here.
+  critical_for_validation:
+    - fmp
+    - robinhood
+  optional_for_validation:
+    - unusual_whales
