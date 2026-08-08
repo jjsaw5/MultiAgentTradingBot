@@ -8,7 +8,7 @@ depends only on the interface, so swapping a vendor is a change inside
 | --- | --- | --- | --- | --- |
 | Market data | `MarketDataProvider` | Financial Modeling Prep | `mock`, `rest` | **Verified against a live key** |
 | Options market | `OptionsMarketProvider` | Robinhood | `mock`, `mcp` | **Mapping verified against live MCP responses**; needs a runtime with tool access to run |
-| Options flow | `OptionsFlowProvider` | Unusual Whales | `mock`, `rest` | REST client written, untested against a live key |
+| Options flow | `OptionsFlowProvider` | Unusual Whales | `mock`, `rest` | **Verified against a live token** |
 | News | `NewsProvider` | — | `mock` | Interface only; no vendor wired |
 
 Select a backend per provider in `.env`:
@@ -81,35 +81,67 @@ a clear error rather than silently degrading.
 **Role.** Options-market intelligence: what the options tape is doing, and
 whether it corroborates a thesis.
 
-**Used for**
+**No single endpoint carries everything**, so a ticker-level `FlowSnapshot` is
+assembled from several. The first two are required; the rest are best-effort and
+leave their fields `None` on failure rather than blocking the snapshot.
 
-| Data | Field on `FlowSnapshot` |
-| --- | --- |
-| Call / put premium | `call_premium`, `put_premium` |
-| Bullish / bearish premium | `bullish_premium`, `bearish_premium` → `directional_premium_share` |
-| Side of market | `ask_side_premium`, `bid_side_premium` → `ask_side_share` |
-| Sweeps, blocks, large trades | `sweep_count`, `block_count`, `large_trade_count` |
-| Multi-leg share | `multileg_share` |
-| Volume and open interest | `total_volume`, `total_open_interest` → `volume_oi_ratio` |
-| Greek flow | `net_delta_flow`, `net_gamma_flow`, `net_vega_flow` |
-| Gamma exposure | `gamma_exposure` |
-| Dark pool | `dark_pool_notional`, `dark_pool_bias` |
-| Implied volatility | `iv_rank`, `iv30` |
-| Expected move | `expected_move_pct` |
+| Endpoint | Supplies | Required |
+| --- | --- | :-: |
+| `/api/stock/{t}/flow-per-expiry` | Premium and volume, split by call/put and by side of market | ✓ |
+| `/api/stock/{t}/flow-alerts` | Sweeps, floor trades, large prints | ✓ |
+| `/api/stock/{t}/greek-flow` | `dir_delta_flow`, `dir_vega_flow` | |
+| `/api/stock/{t}/volatility/realized` | Implied-volatility history → IV rank | |
+| `/api/stock/{t}/oi-change` | Open interest, for the volume/OI ratio | |
+| `/api/stock/{t}/spot-exposures` | Gamma exposure | |
+| `/api/darkpool/{t}` | Dark-pool notional and bias | |
+| `/api/market/market-tide` | Market-wide net premium | |
 
 **Enabling it.** `UNUSUAL_WHALES_BACKEND=rest` and `UNUSUAL_WHALES_API_KEY=...`
 (bearer token).
+
+### Two values are derived, not reported
+
+Both are labelled as derivations here and in the code, because neither is a
+field the API returns.
+
+**Bullish and bearish premium.** Unusual Whales reports premium by *side of
+market*, not by directional intent. The standard construction is applied:
+
+```
+bullish = call premium on the ask + put premium on the bid
+bearish = put  premium on the ask + call premium on the bid
+```
+
+This is arithmetic on measured values rather than a judgement, but it is still
+an inference. It also matters a great deal: on a live NVDA snapshot, calls
+outweighed puts **$1.07bn to $285m** — a naive call/put read would call that
+overwhelmingly bullish. Once side of market was accounted for, the directional
+split was **0.55**, barely bullish at all. That gap is precisely why the scoring
+engine consumes `directional_premium_share` and not a call/put ratio.
+
+**IV rank.** Not published. Computed as the current implied volatility's
+position within its trailing 252-day range — the conventional definition. This
+fills a real gap: Robinhood publishes no IV rank either, and 10 scoring points
+depend on it. When the trailing range is flat the percentile is meaningless, so
+it is left unscored rather than reported as zero.
+
+### Multi-leg share is not measurable from this feed
+
+`/flow-alerts` returns single-leg prints only: every row observed carries
+`has_singleleg: true` and `has_multileg: false`, and the `is_multileg` query
+parameter is ignored. A share computed from it would therefore always be `0.0`
+— which would assert *"this tape has no multi-leg flow"* from a source that
+cannot report any.
+
+So the share is reported only when a multi-leg print actually appears, and left
+`None` otherwise. The flow rules treat an absent share as "cannot tell" and skip
+the multi-leg suppression, rather than being told there is nothing to suppress.
 
 **How the data is treated.** The schema deliberately separates raw premium
 totals from side-of-market attribution, because a large print is not directional
 information on its own. `multileg_share` exists specifically so the scoring
 engine can suppress sweep credit when single-leg inference is unreliable. See
 [SCORING.md](SCORING.md#component-4--options-flow-confirmation-15).
-
-**Field-name drift.** Unusual Whales has revised field names across versions, so
-`_first()` tolerates several spellings per field and returns `None` when nothing
-matches. A missing field stays missing — a fabricated flow number would silently
-move a trade's score.
 
 **Optional by design.** If the provider is unavailable, the flow component
 scores **zero** and records that it was unscored. It never scores "neutral",

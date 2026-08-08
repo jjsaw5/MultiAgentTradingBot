@@ -153,12 +153,17 @@ sweep of the whole package for order-submitting functions.
 
 **Milestone 1: complete.** A working vertical slice — market intelligence,
 candidate generation, validation, deterministic scoring, ranked report, and
-database persistence — running end to end on realistic mock data, with 163
-tests covering scoring, rules, risk arithmetic, indicators, safety invariants,
-and the full pipeline.
+database persistence — running end to end, with 213 tests covering scoring
+rules, hard rejections, risk arithmetic, indicators, provider mappings, safety
+invariants, and the full pipeline.
 
-Not yet built: real-credential integrations beyond the FMP and Unusual Whales
-REST clients, the Risk Reviewer agent, the performance analytics engine, and
+**Verified against live credentials:** Financial Modeling Prep (REST) and
+Unusual Whales (REST) both work end to end against real keys, and the Robinhood
+MCP mapping is pinned against recorded live responses. Each integration is
+covered by fixture tests built from real payloads.
+
+Not yet built: the Risk Reviewer agent, the screening funnel, automatic
+shadow-tracking of recommendations, the performance analytics engine, and
 scheduling. See [ARCHITECTURE.md](ARCHITECTURE.md#roadmap) for what comes next.
 
 ## Licence
